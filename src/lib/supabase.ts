@@ -1,7 +1,7 @@
 // Client-safe Supabase wrapper with graceful fallback for preview/build environments
-// Replace with your real Supabase client import when deploying (keeps same API surface)
-
-"use client";
+// This file should NOT include "use client" because it's a utility module imported
+// by both client and server components. Keep exports standard so the bundler treats
+// it as an ES module.
 
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
@@ -19,11 +19,10 @@ const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 let supabase: SafeSupabase;
 
 if (SUPABASE_URL && SUPABASE_ANON_KEY) {
-  // ambiente normal — cria o client real
+  // normal environment — create real client
   supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 } else {
-  // fallback "mock" para ambientes de preview/build sem envs — evita que o bundler
-  // quebre com import/export e fornece uma API mínima que o app espera.
+  // fallback mock for preview/build environments where envs are missing
   supabase = {
     from: (table: string) => ({
       select: async (cols = "*") => ({ data: [], error: null }),
@@ -36,5 +35,5 @@ if (SUPABASE_URL && SUPABASE_ANON_KEY) {
   } as any;
 }
 
-export { supabase };
 export default supabase;
+export { supabase };
