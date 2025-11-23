@@ -17,6 +17,7 @@ export default function DashboardPage() {
   const [user, setUser] = useState<any>(null);
   const [verifications, setVerifications] = useState<Verification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string>('');
   const [stats, setStats] = useState({
     total: 0,
     safe: 0,
@@ -26,38 +27,93 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const checkUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user) {
-        router.push('/login');
-        return;
-      }
+      try {
+        setLoading(true);
+        setLoadError('');
 
-      setUser(user);
-      await loadVerifications(user.id);
+        // Verifica sessão do Supabase de forma segura
+        const sessionResp = await supabase.auth.getSession();
+        if (!sessionResp || !sessionResp.data || !sessionResp.data.session) {
+          // tentativa adicional de obter user (compatibilidade com versões)
+          const userResp = await supabase.auth.getUser?.();
+          const maybeUser = userResp?.data?.user ?? null;
+          if (!maybeUser) {
+            // não autenticado -> redireciona para login
+            router.push('/login');
+            return;
+          }
+          setUser(maybeUser);
+          await loadVerifications(maybeUser.id);
+          return;
+        }
+
+        const currentUser = sessionResp.data.session.user;
+        if (!currentUser) {
+          router.push('/login');
+          return;
+        }
+
+        setUser(currentUser);
+        await loadVerifications(currentUser.id);
+      } catch (err: any) {
+        console.error('[Dashboard] error checking user/session:', err);
+        setLoadError('Erro ao verificar sessão do usuário. Por favor, faça login novamente.');
+        // redireciona para login por segurança
+        try { router.push('/login'); } catch(e) { /* ignore */ }
+      } finally {
+        setLoading(false);
+      }
     };
 
     checkUser();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
-  const loadVerifications = async (userId: string) => {
+  // Função segura para carregar verificações
+  const loadVerifications = async (userId: string, limit = 10) => {
     try {
       setLoading(true);
-      const data = await getVerifications(userId, 10);
-      setVerifications(data);
+      setLoadError('');
+
+      if (!userId) {
+        console.warn('[Dashboard] loadVerifications chamado sem userId');
+        setVerifications([]);
+        setLoading(false);
+        setLoadError('Usuário não autenticado.');
+        return;
+      }
+
+      // Chama helper que está no lib/supabase (getVerifications)
+      const data = await getVerifications(userId, limit);
+
+      // Validations: garante array
+      const arr = Array.isArray(data) ? data : [];
+      setVerifications(arr);
 
       // Calculate stats
-      const total = data.length;
-      const safe = data.filter(v => v.risk_level === 'safe').length;
-      const attention = data.filter(v => v.risk_level === 'attention').length;
-      const highRisk = data.filter(v => v.risk_level === 'high_risk').length;
+      const total = arr.length;
+      const safe = arr.filter(v => v.risk_level === 'safe').length;
+      const attention = arr.filter(v => v.risk_level === 'attention').length;
+      const highRisk = arr.filter(v => v.risk_level === 'high_risk').length;
 
       setStats({ total, safe, attention, highRisk });
-    } catch (error) {
-      console.error('Error loading verifications:', error);
+    } catch (error: any) {
+      // Logging detalhado para diagnosticar
+      console.error('[Dashboard] Error loading verifications:', error, 'string:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
+      setVerifications([]);
+      setLoadError('Falha ao carregar verificações. Verifique logs (console) para mais detalhes.');
     } finally {
       setLoading(false);
     }
+  };
+
+  // Retry handler (útil para o usuário tentar novamente)
+  const handleRetry = async () => {
+    if (!user?.id) {
+      setLoadError('Usuário não autenticado. Faça login.');
+      return;
+    }
+    await loadVerifications(user.id, 20);
   };
 
   if (loading) {
@@ -74,7 +130,7 @@ export default function DashboardPage() {
   return (
     <div className="min-h-screen bg-black text-white">
       <Navbar />
-      
+
       <main className="pt-24 pb-12 px-4">
         <div className="max-w-7xl mx-auto">
           {/* Header */}
@@ -83,7 +139,7 @@ export default function DashboardPage() {
               Dashboard
             </h1>
             <p className="text-gray-400">
-              Bem-vindo de volta, {user?.email?.split('@')[0]}
+              Bem-vindo de volta, {user?.email ? user.email.split('@')[0] : 'usuário'}
             </p>
           </div>
 
@@ -148,6 +204,21 @@ export default function DashboardPage() {
             </Link>
           </div>
 
+          {/* Load error display */}
+          {loadError && (
+            <div className="mb-6 p-4 rounded-md bg-red-900/40 border border-red-700 text-red-100">
+              <div className="flex items-center justify-between">
+                <div>
+                  <strong className="block">Erro ao carregar verificações</strong>
+                  <p className="text-sm text-red-200">{loadError}</p>
+                </div>
+                <div>
+                  <Button onClick={handleRetry} className="bg-[#FFD200] text-black">Tentar novamente</Button>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Recent Verifications */}
           <Card className="bg-gray-900 border-[#FFD200]/20">
             <CardHeader>
@@ -192,7 +263,7 @@ export default function DashboardPage() {
                               </span>
                             </div>
                             <p className="text-sm text-gray-400 line-clamp-2">
-                              {verification.reasons[0] || 'Análise concluída'}
+                              {Array.isArray(verification.reasons) ? verification.reasons[0] : 'Análise concluída'}
                             </p>
                           </div>
                           <div className="text-right">
@@ -200,7 +271,7 @@ export default function DashboardPage() {
                               {verification.score}
                             </div>
                             <p className="text-xs text-gray-500">
-                              {format(new Date(verification.created_at), 'dd/MM/yyyy', { locale: ptBR })}
+                              {verification.created_at ? format(new Date(verification.created_at), 'dd/MM/yyyy', { locale: ptBR }) : ''}
                             </p>
                           </div>
                         </div>
