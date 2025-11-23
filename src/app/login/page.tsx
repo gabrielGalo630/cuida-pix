@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Shield } from 'lucide-react';
 import { Auth } from '@supabase/auth-ui-react';
@@ -9,8 +9,14 @@ import { supabase } from '@/lib/supabase';
 
 export default function LoginPage() {
   const router = useRouter();
+  const [clientRedirect, setClientRedirect] = useState<string | undefined>(undefined);
 
   useEffect(() => {
+    // Calcular redirect apenas no cliente (garante que window existe)
+    if (typeof window !== 'undefined') {
+      setClientRedirect(`${window.location.origin}/dashboard`);
+    }
+
     // Check if user is already logged in
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (user) {
@@ -107,7 +113,8 @@ export default function LoginPage() {
               },
             }}
             providers={['google']}
-            redirectTo={`${window.location.origin}/dashboard`}
+            // Passa redirectTo só depois que fizermos a checagem no cliente
+            redirectTo={clientRedirect}
             onlyThirdPartyProviders
             localization={{
               variables: {
