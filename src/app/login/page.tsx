@@ -1,3 +1,4 @@
+// src/app/login/page.tsx
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -9,31 +10,62 @@ import { supabase } from '@/lib/supabase';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [origin, setOrigin] = useState("");
+  const [origin, setOrigin] = useState<string | null>(null);
 
-  // Garante que window só será usado no navegador
+  // só roda no cliente - define origin de forma segura
   useEffect(() => {
-    setOrigin(window.location.origin);
+    if (typeof window !== 'undefined') {
+      try {
+        setOrigin(window.location.origin);
+      } catch (err) {
+        console.error('Erro ao obter origin:', err);
+        setOrigin(null);
+      }
+    }
   }, []);
 
   useEffect(() => {
+    let subscription: any = null;
+
     const checkUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        router.push('/dashboard');
+      try {
+        const { data } = await supabase.auth.getUser();
+        const user = (data as any)?.user ?? null;
+        if (user) {
+          router.push('/dashboard');
+        }
+      } catch (err) {
+        console.error('Erro ao checar usuário:', err);
       }
     };
+
     checkUser();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (event, session) => {
+    try {
+      const result = supabase.auth.onAuthStateChange((event, session) => {
         if (event === 'SIGNED_IN' && session) {
           router.push('/dashboard');
         }
-      }
-    );
+      });
+      // dependendo da versão, `result` pode ter structure diferente
+      subscription = (result && (result as any).data && (result as any).data.subscription) || (result as any);
+    } catch (err) {
+      console.error('Erro ao registrar onAuthStateChange:', err);
+      subscription = null;
+    }
 
-    return () => subscription.unsubscribe();
+    return () => {
+      try {
+        if (subscription && typeof subscription.unsubscribe === 'function') {
+          subscription.unsubscribe();
+        } else if (subscription && typeof subscription === 'function') {
+          // fallback: se a subscription for função
+          subscription();
+        }
+      } catch (err) {
+        console.warn('Erro ao limpar subscription:', err);
+      }
+    };
   }, [router]);
 
   return (
@@ -49,8 +81,7 @@ export default function LoginPage() {
         </div>
 
         <div className="bg-gray-900 border border-[#FFD200]/20 rounded-2xl p-8">
-
-          {origin && (
+          {origin ? (
             <Auth
               supabaseClient={supabase}
               appearance={{
@@ -85,6 +116,11 @@ export default function LoginPage() {
               redirectTo={`${origin}/dashboard`}
               onlyThirdPartyProviders
             />
+          ) : (
+            // placeholder simples enquanto origin não está pronto
+            <div className="flex items-center justify-center py-10">
+              <div className="animate-pulse text-gray-500">Carregando...</div>
+            </div>
           )}
         </div>
 
