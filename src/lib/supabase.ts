@@ -1,24 +1,44 @@
-import { createClient } from '@supabase/supabase-js';
+// src/lib/supabase.ts
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-// Supabase client for client-side operations
-export const supabase = createClient(
+// Detecta ambiente (server vs client)
+const isServer = typeof window === 'undefined';
+
+// Client-safe Supabase (padrão, usa ANON key)
+export const supabase: SupabaseClient = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// Supabase admin client for server-side operations (with service role key)
-export const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false
+// Admin (SERVICE ROLE) — **somente** no servidor.
+// Se não estivermos no server, não cria para evitar vazamento do service role.
+let _supabaseAdmin: SupabaseClient | null = null;
+if (isServer && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  _supabaseAdmin = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
     }
-  }
-);
+  );
+}
 
-// Database types
+/**
+ * Pegar o admin client (server-only). Vai lançar erro se usado no cliente.
+ */
+export function getSupabaseAdmin(): SupabaseClient {
+  if (!_supabaseAdmin) {
+    throw new Error('Supabase admin client is only available on the server. Ensure you call this from a server-side function and that SUPABASE_SERVICE_ROLE_KEY is set.');
+  }
+  return _supabaseAdmin;
+}
+
+/* -------------------------
+   Tipos (DB)
+   ------------------------- */
 export interface Verification {
   id: string;
   user_id: string;
@@ -34,6 +54,7 @@ export interface Verification {
   created_at: string;
 }
 
+/* (subscription/log types kept as before) */
 export interface Subscription {
   id: string;
   user_id: string;
@@ -58,19 +79,26 @@ export interface Log {
   created_at: string;
 }
 
-// Helper functions
+/* -------------------------
+   Helpers / API wrappers
+   ------------------------- */
+
 export async function getCurrentUser() {
-  const { data: { user }, error } = await supabase.auth.getUser();
+  const { data, error } = await supabase.auth.getUser();
   if (error) throw error;
-  return user;
+  return (data as any)?.user ?? null;
 }
 
-export async function signInWithGoogle() {
+/**
+ * signInWithGoogle: não usa window internamente.
+ * Se você precisa redirecionar para dashboard, passe redirectTo como parâmetro
+ * a partir do componente cliente (ex: redirectTo={window.location.origin + '/dashboard'}).
+ */
+export async function signInWithGoogle(redirectTo?: string) {
+  const options = redirectTo ? { redirectTo } : undefined;
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
-    options: {
-      redirectTo: `${window.location.origin}/dashboard`
-    }
+    options
   });
   if (error) throw error;
   return data;
@@ -81,10 +109,14 @@ export async function signOut() {
   if (error) throw error;
 }
 
+/**
+ * Upload de arquivo para o bucket 'uploads'
+ * - Executar no cliente é OK (usa ANON key). Se quiser upload server-side, use getSupabaseAdmin().
+ */
 export async function uploadFile(file: File, userId: string): Promise<string> {
   const fileExt = file.name.split('.').pop();
   const fileName = `${userId}/${Date.now()}.${fileExt}`;
-  
+
   const { data, error } = await supabase.storage
     .from('uploads')
     .upload(fileName, file, {
@@ -93,25 +125,40 @@ export async function uploadFile(file: File, userId: string): Promise<string> {
     });
 
   if (error) throw error;
-  return data.path;
+  // data.path é o retorno esperado pelo supabase v2 upload
+  return (data as any).path;
 }
 
+/**
+ * Gera URL pública (note: bucket privado requer signed URL via admin)
+ */
 export async function getFileUrl(path: string): Promise<string> {
-  const { data } = supabase.storage
+  const { data, error } = supabase.storage
     .from('uploads')
     .getPublicUrl(path);
-  
-  return data.publicUrl;
+
+  if (error) {
+    throw error;
+  }
+  return (data as any).publicUrl;
 }
 
 export async function deleteFile(path: string): Promise<void> {
   const { error } = await supabase.storage
     .from('uploads')
     .remove([path]);
-  
+
   if (error) throw error;
 }
 
+/* -------------------------
+   Verifications / DB helpers
+   ------------------------- */
+
+/**
+ * createVerification — usa client (ANON). Em casos onde você precisa de service_role (por exemplo inserção com columns que precisam do role),
+ * chame getSupabaseAdmin() dentro de uma rota server-side e execute lá.
+ */
 export async function createVerification(verification: Omit<Verification, 'id' | 'created_at'>): Promise<Verification> {
   const { data, error } = await supabase
     .from('verifications')
@@ -120,7 +167,7 @@ export async function createVerification(verification: Omit<Verification, 'id' |
     .single();
 
   if (error) throw error;
-  return data;
+  return data as Verification;
 }
 
 export async function getVerifications(userId: string, limit = 10, offset = 0): Promise<Verification[]> {
@@ -132,7 +179,7 @@ export async function getVerifications(userId: string, limit = 10, offset = 0): 
     .range(offset, offset + limit - 1);
 
   if (error) throw error;
-  return data || [];
+  return (data as Verification[]) || [];
 }
 
 export async function getVerification(id: string): Promise<Verification | null> {
@@ -143,10 +190,11 @@ export async function getVerification(id: string): Promise<Verification | null> 
     .single();
 
   if (error) {
-    if (error.code === 'PGRST116') return null;
+    // PGRST116: not found (keeps backward compat)
+    if ((error as any).code === 'PGRST116') return null;
     throw error;
   }
-  return data;
+  return data as Verification;
 }
 
 export async function getUserSubscription(userId: string): Promise<Subscription | null> {
@@ -158,14 +206,20 @@ export async function getUserSubscription(userId: string): Promise<Subscription 
     .single();
 
   if (error) {
-    if (error.code === 'PGRST116') return null;
+    if ((error as any).code === 'PGRST116') return null;
     throw error;
   }
-  return data;
+  return data as Subscription | null;
 }
 
 export async function incrementVerificationCount(userId: string): Promise<void> {
-  const { error } = await supabase.rpc('increment_verification_count', { user_id: userId });
+  // RPC must be created in Supabase (increment_verification_count)
+  if (!isServer) {
+    // try to prevent client calling server-only RPC directly; allow if needed
+    console.warn('incrementVerificationCount called from client; prefer server-side.');
+  }
+  const { error } = await (isServer ? getSupabaseAdmin() : supabase)
+    .rpc('increment_verification_count', { user_id: userId });
   if (error) throw error;
 }
 
