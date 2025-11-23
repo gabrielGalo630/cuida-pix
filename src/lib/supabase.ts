@@ -7,9 +7,8 @@ let _supabaseClient: SupabaseClient | null = null;
 let _supabaseAdmin: SupabaseClient | null = null;
 
 /**
- * Cria o client público (ANON) de forma preguiçosa (lazy).
- * Evita chamar createClient() durante import-time para não quebrar builds/previews
- * quando as envs não estão disponíveis ainda.
+ * Client público — lazy init
+ * Evita erro de createClient durante import.
  */
 export function getSupabase(): SupabaseClient {
   if (_supabaseClient) return _supabaseClient;
@@ -18,8 +17,9 @@ export function getSupabase(): SupabaseClient {
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!url || !anon) {
-    // Mensagem clara para debugging no preview/build
-    throw new Error('Missing Supabase public envs. Ensure NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY are set in the environment.');
+    throw new Error(
+      'Supabase public env missing. Add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.'
+    );
   }
 
   _supabaseClient = createClient(url, anon);
@@ -27,12 +27,11 @@ export function getSupabase(): SupabaseClient {
 }
 
 /**
- * Retorna o admin client (SERVICE ROLE) — somente server-side.
- * Lança erro se chamado no browser ou se a env não existir.
+ * Admin — server only
  */
 export function getSupabaseAdmin(): SupabaseClient {
   if (!isServer) {
-    throw new Error('getSupabaseAdmin() must be called from server-side code only.');
+    throw new Error('getSupabaseAdmin() cannot run on client');
   }
   if (_supabaseAdmin) return _supabaseAdmin;
 
@@ -40,11 +39,16 @@ export function getSupabaseAdmin(): SupabaseClient {
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !serviceKey) {
-    throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_URL in server env.');
+    throw new Error(
+      'Missing SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_URL on server env.'
+    );
   }
 
   _supabaseAdmin = createClient(url, serviceKey, {
-    auth: { autoRefreshToken: false, persistSession: false }
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
   });
 
   return _supabaseAdmin;
