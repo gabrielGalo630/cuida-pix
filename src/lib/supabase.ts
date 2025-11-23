@@ -3,52 +3,49 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const isServer = typeof window === 'undefined';
 
-/**
- * Client (browser) - usa ANON key pública.
- * Se as envs não estiverem definidas, logamos claramente (fail-fast).
- */
-const PUBLIC_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
-const PUBLIC_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '';
-
-if (!PUBLIC_URL) {
-  // mensagem clara durante build/preview
-  // no Lasy essa mensagem aparece nos logs/build e te ajuda a identificar env faltando
-  // (não remove a execução para evitar crash silencioso em alguns previews)
-  // eslint-disable-next-line no-console
-  console.error('Missing env: NEXT_PUBLIC_SUPABASE_URL');
-}
-if (!PUBLIC_ANON_KEY) {
-  // eslint-disable-next-line no-console
-  console.error('Missing env: NEXT_PUBLIC_SUPABASE_ANON_KEY');
-}
-
-export const supabase: SupabaseClient = createClient(PUBLIC_URL, PUBLIC_ANON_KEY);
-
-/**
- * Admin (service role) - **SOMENTE** inicializado no server.
- * Não crie admin no bundle do cliente.
- */
+let _supabaseClient: SupabaseClient | null = null;
 let _supabaseAdmin: SupabaseClient | null = null;
 
-if (isServer && process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  _supabaseAdmin = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    }
-  );
+/**
+ * Cria o client público (ANON) de forma preguiçosa (lazy).
+ * Evita chamar createClient() durante import-time para não quebrar builds/previews
+ * quando as envs não estão disponíveis ainda.
+ */
+export function getSupabase(): SupabaseClient {
+  if (_supabaseClient) return _supabaseClient;
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !anon) {
+    // Mensagem clara para debugging no preview/build
+    throw new Error('Missing Supabase public envs. Ensure NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY are set in the environment.');
+  }
+
+  _supabaseClient = createClient(url, anon);
+  return _supabaseClient;
 }
 
+/**
+ * Retorna o admin client (SERVICE ROLE) — somente server-side.
+ * Lança erro se chamado no browser ou se a env não existir.
+ */
 export function getSupabaseAdmin(): SupabaseClient {
   if (!isServer) {
     throw new Error('getSupabaseAdmin() must be called from server-side code only.');
   }
-  if (!_supabaseAdmin) {
-    throw new Error('Supabase admin client not initialized. Ensure SUPABASE_SERVICE_ROLE_KEY is set in server env.');
+  if (_supabaseAdmin) return _supabaseAdmin;
+
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !serviceKey) {
+    throw new Error('Missing SUPABASE_SERVICE_ROLE_KEY or NEXT_PUBLIC_SUPABASE_URL in server env.');
   }
+
+  _supabaseAdmin = createClient(url, serviceKey, {
+    auth: { autoRefreshToken: false, persistSession: false }
+  });
+
   return _supabaseAdmin;
 }
