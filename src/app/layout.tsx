@@ -17,8 +17,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Criado com a Lasy",
-  description: "Projeto criado com Lasy AI",
+  title: "Cuida-PIX - IA Nº1 para Detectar Golpes em PIX",
+  description: "Análise instantânea de comprovantes PIX com IA avançada. Precisão de elite. Segurança real. Proteja-se contra golpes digitais.",
 };
 
 export default function RootLayout({

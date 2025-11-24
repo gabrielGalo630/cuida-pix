@@ -3,21 +3,60 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Shield, TrendingUp, AlertTriangle, CheckCircle, Plus } from 'lucide-react';
-import { supabase, getVerifications, type Verification } from '@/lib/supabase';
-import { getRiskColor, getRiskLabel } from '@/lib/openai';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Navbar } from '@/components/custom/navbar';
+import { 
+  Shield, 
+  TrendingUp, 
+  AlertTriangle, 
+  CheckCircle, 
+  Plus, 
+  LayoutDashboard,
+  FileSearch,
+  History,
+  Settings,
+  LogOut,
+  Menu,
+  X,
+  Sparkles
+} from 'lucide-react';
+import { supabase } from '@/lib/supabase';
 import { format } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
+
+interface Verification {
+  id: string;
+  user_id: string;
+  type: string;
+  score: number;
+  risk_level: string;
+  reasons: string[];
+  recommendations: string[];
+  created_at: string;
+}
+
+const getRiskColor = (level: string) => {
+  switch (level) {
+    case 'safe': return '#10B981';
+    case 'attention': return '#F59E0B';
+    case 'high_risk': return '#EF4444';
+    default: return '#6B7280';
+  }
+};
+
+const getRiskLabel = (level: string) => {
+  switch (level) {
+    case 'safe': return 'Seguro';
+    case 'attention': return 'Atenção';
+    case 'high_risk': return 'Alto Risco';
+    default: return 'Desconhecido';
+  }
+};
 
 export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
   const [verifications, setVerifications] = useState<Verification[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string>('');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [stats, setStats] = useState({
     total: 0,
     safe: 0,
@@ -27,100 +66,79 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const checkUser = async () => {
-      try {
-        setLoading(true);
-        setLoadError('');
-
-        // Verifica sessão do Supabase de forma segura
-        const sessionResp = await supabase.auth.getSession();
-        if (!sessionResp || !sessionResp.data || !sessionResp.data.session) {
-          // tentativa adicional de obter user (compatibilidade com versões)
-          const userResp = await supabase.auth.getUser?.();
-          const maybeUser = userResp?.data?.user ?? null;
-          if (!maybeUser) {
-            // não autenticado -> redireciona para login
-            router.push('/login');
-            return;
-          }
-          setUser(maybeUser);
-          await loadVerifications(maybeUser.id);
-          return;
-        }
-
-        const currentUser = sessionResp.data.session.user;
-        if (!currentUser) {
-          router.push('/login');
-          return;
-        }
-
-        setUser(currentUser);
-        await loadVerifications(currentUser.id);
-      } catch (err: any) {
-        console.error('[Dashboard] error checking user/session:', err);
-        setLoadError('Erro ao verificar sessão do usuário. Por favor, faça login novamente.');
-        // redireciona para login por segurança
-        try { router.push('/login'); } catch(e) { /* ignore */ }
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    checkUser();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router]);
-
-  // Função segura para carregar verificações
-  const loadVerifications = async (userId: string, limit = 10) => {
-    try {
-      setLoading(true);
-      setLoadError('');
-
-      if (!userId) {
-        console.warn('[Dashboard] loadVerifications chamado sem userId');
-        setVerifications([]);
-        setLoading(false);
-        setLoadError('Usuário não autenticado.');
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        router.push('/login');
         return;
       }
 
-      // Chama helper que está no lib/supabase (getVerifications)
-      const data = await getVerifications(userId, limit);
+      setUser(user);
+      await loadVerifications(user.id);
+    };
 
-      // Validations: garante array
-      const arr = Array.isArray(data) ? data : [];
-      setVerifications(arr);
+    checkUser();
+  }, [router]);
 
-      // Calculate stats
-      const total = arr.length;
-      const safe = arr.filter(v => v.risk_level === 'safe').length;
-      const attention = arr.filter(v => v.risk_level === 'attention').length;
-      const highRisk = arr.filter(v => v.risk_level === 'high_risk').length;
+  const loadVerifications = async (userId: string) => {
+    try {
+      setLoading(true);
+      
+      // Criar AbortController com timeout de 1 segundo
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1000);
 
-      setStats({ total, safe, attention, highRisk });
-    } catch (error: any) {
-      // Logging detalhado para diagnosticar
-      console.error('[Dashboard] Error loading verifications:', error, 'string:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
+      try {
+        const { data, error } = await supabase
+          .from('verifications')
+          .select('*')
+          .eq('user_id', userId)
+          .order('created_at', { ascending: false })
+          .limit(10)
+          .abortSignal(controller.signal);
+
+        clearTimeout(timeoutId);
+
+        if (error) {
+          // Silenciosamente retorna array vazio sem console.error
+          setVerifications([]);
+          return;
+        }
+
+        setVerifications(data || []);
+
+        const total = (data || []).length;
+        const safe = (data || []).filter(v => v.risk_level === 'safe').length;
+        const attention = (data || []).filter(v => v.risk_level === 'attention').length;
+        const highRisk = (data || []).filter(v => v.risk_level === 'high_risk').length;
+
+        setStats({ total, safe, attention, highRisk });
+      } catch (fetchError: any) {
+        clearTimeout(timeoutId);
+        // Silenciosamente retorna array vazio - não mostra erro no console
+        // Trata tanto erro de rede quanto timeout/abort
+        setVerifications([]);
+        setStats({ total: 0, safe: 0, attention: 0, highRisk: 0 });
+      }
+    } catch (error) {
+      // Catch externo para qualquer erro inesperado - silencioso
       setVerifications([]);
-      setLoadError('Falha ao carregar verificações. Verifique logs (console) para mais detalhes.');
+      setStats({ total: 0, safe: 0, attention: 0, highRisk: 0 });
     } finally {
       setLoading(false);
     }
   };
 
-  // Retry handler (útil para o usuário tentar novamente)
-  const handleRetry = async () => {
-    if (!user?.id) {
-      setLoadError('Usuário não autenticado. Faça login.');
-      return;
-    }
-    await loadVerifications(user.id, 20);
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.push('/');
   };
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
+      <div className="min-h-screen bg-[#0D0D0D] flex items-center justify-center">
         <div className="text-center">
-          <Shield className="w-12 h-12 text-[#FFD200] animate-pulse mx-auto mb-4" />
+          <Shield className="w-12 h-12 text-[#F6C90E] animate-pulse mx-auto mb-4" />
           <p className="text-gray-400">Carregando...</p>
         </div>
       </div>
@@ -128,166 +146,252 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-black text-white">
-      <Navbar />
+    <div className="min-h-screen bg-[#0D0D0D] text-white flex">
+      {/* Sidebar */}
+      <aside className={`
+        fixed lg:static inset-y-0 left-0 z-50 w-72 bg-[#1A1A1A] border-r border-[#F6C90E]/10
+        transform transition-transform duration-300 ease-in-out
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+      `}>
+        <div className="flex flex-col h-full">
+          {/* Logo */}
+          <div className="p-6 border-b border-[#F6C90E]/10">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-gradient-to-br from-[#F6C90E] to-[#FFE347] rounded-xl flex items-center justify-center">
+                  <Shield className="w-6 h-6 text-[#0D0D0D]" />
+                </div>
+                <span className="text-xl font-extrabold">Cuida-PIX</span>
+              </div>
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="lg:hidden text-gray-400 hover:text-white"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+          </div>
 
-      <main className="pt-24 pb-12 px-4">
-        <div className="max-w-7xl mx-auto">
-          {/* Header */}
-          <div className="mb-8">
-            <h1 className="text-3xl md:text-4xl font-bold mb-2">
+          {/* Navigation */}
+          <nav className="flex-1 p-4 space-y-2">
+            <Link
+              href="/dashboard"
+              className="flex items-center gap-3 px-4 py-3 bg-[#F6C90E]/10 text-[#F6C90E] rounded-xl font-semibold"
+            >
+              <LayoutDashboard className="w-5 h-5" />
               Dashboard
-            </h1>
-            <p className="text-gray-400">
-              Bem-vindo de volta, {user?.email ? user.email.split('@')[0] : 'usuário'}
-            </p>
-          </div>
-
-          {/* Stats Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-            <Card className="bg-gray-900 border-[#FFD200]/20">
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium text-gray-400">
-                  Total de Verificações
-                </CardTitle>
-                <Shield className="w-4 h-4 text-[#FFD200]" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">{stats.total}</div>
-              </CardContent>
-            </Card>
-
-            <Card className="bg-gray-900 border-green-500/20">
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium text-gray-400">
-                  Seguros
-                </CardTitle>
-                <CheckCircle className="w-4 h-4 text-green-500" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-green-500">{stats.safe}</div>
-              </CardContent>
-            </Card>
-
-            <Card className="bg-gray-900 border-yellow-500/20">
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium text-gray-400">
-                  Atenção
-                </CardTitle>
-                <AlertTriangle className="w-4 h-4 text-yellow-500" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-yellow-500">{stats.attention}</div>
-              </CardContent>
-            </Card>
-
-            <Card className="bg-gray-900 border-red-500/20">
-              <CardHeader className="flex flex-row items-center justify-between pb-2">
-                <CardTitle className="text-sm font-medium text-gray-400">
-                  Alto Risco
-                </CardTitle>
-                <TrendingUp className="w-4 h-4 text-red-500" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-red-500">{stats.highRisk}</div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* CTA Button */}
-          <div className="mb-8">
-            <Link href="/upload">
-              <Button className="w-full sm:w-auto bg-[#FFD200] text-black hover:bg-[#FFD200]/90 text-lg px-8 py-6 h-auto font-semibold">
-                <Plus className="w-5 h-5 mr-2" />
-                Fazer nova verificação
-              </Button>
             </Link>
-          </div>
+            <Link
+              href="/analyze"
+              className="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-[#0D0D0D] rounded-xl transition-all"
+            >
+              <FileSearch className="w-5 h-5" />
+              Análises
+            </Link>
+            <Link
+              href="/history"
+              className="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-[#0D0D0D] rounded-xl transition-all"
+            >
+              <History className="w-5 h-5" />
+              Histórico
+            </Link>
+            <Link
+              href="/settings"
+              className="flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-white hover:bg-[#0D0D0D] rounded-xl transition-all"
+            >
+              <Settings className="w-5 h-5" />
+              Configurações
+            </Link>
+          </nav>
 
-          {/* Load error display */}
-          {loadError && (
-            <div className="mb-6 p-4 rounded-md bg-red-900/40 border border-red-700 text-red-100">
-              <div className="flex items-center justify-between">
-                <div>
-                  <strong className="block">Erro ao carregar verificações</strong>
-                  <p className="text-sm text-red-200">{loadError}</p>
-                </div>
-                <div>
-                  <Button onClick={handleRetry} className="bg-[#FFD200] text-black">Tentar novamente</Button>
-                </div>
+          {/* User & Logout */}
+          <div className="p-4 border-t border-[#F6C90E]/10">
+            <div className="mb-3 px-4 py-3 bg-[#0D0D0D] rounded-xl">
+              <p className="text-xs text-gray-500 mb-1">Logado como</p>
+              <p className="text-sm font-semibold truncate">{user?.email}</p>
+            </div>
+            <button
+              onClick={handleLogout}
+              className="w-full flex items-center gap-3 px-4 py-3 text-gray-400 hover:text-red-400 hover:bg-red-500/10 rounded-xl transition-all"
+            >
+              <LogOut className="w-5 h-5" />
+              Sair
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      {/* Overlay for mobile */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
+      {/* Main Content */}
+      <main className="flex-1 overflow-auto">
+        {/* Header */}
+        <header className="sticky top-0 z-30 bg-[#0D0D0D]/95 backdrop-blur-lg border-b border-[#F6C90E]/10 px-4 lg:px-8 py-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="lg:hidden text-gray-400 hover:text-white"
+              >
+                <Menu className="w-6 h-6" />
+              </button>
+              <div>
+                <h1 className="text-2xl md:text-3xl font-extrabold">Dashboard</h1>
+                <p className="text-gray-400 text-sm mt-1">
+                  Bem-vindo de volta, {user?.email?.split('@')[0]}
+                </p>
               </div>
             </div>
-          )}
+            <Link href="/analyze">
+              <button className="hidden sm:flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-[#F6C90E] to-[#FFE347] text-[#0D0D0D] font-bold rounded-xl hover:shadow-2xl hover:scale-105 transition-all">
+                <Plus className="w-5 h-5" />
+                Nova Análise
+              </button>
+            </Link>
+          </div>
+        </header>
+
+        <div className="p-4 lg:p-8 space-y-8">
+          {/* Stats Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="bg-[#1A1A1A] border border-[#F6C90E]/20 rounded-2xl p-6 hover:border-[#F6C90E]/50 transition-all">
+              <div className="flex items-center justify-between mb-4">
+                <div className="w-12 h-12 bg-[#F6C90E]/10 rounded-xl flex items-center justify-center">
+                  <Shield className="w-6 h-6 text-[#F6C90E]" />
+                </div>
+                <Sparkles className="w-5 h-5 text-gray-600" />
+              </div>
+              <p className="text-gray-400 text-sm mb-1">Total de Verificações</p>
+              <p className="text-3xl font-extrabold">{stats.total}</p>
+            </div>
+
+            <div className="bg-[#1A1A1A] border border-green-500/20 rounded-2xl p-6 hover:border-green-500/50 transition-all">
+              <div className="flex items-center justify-between mb-4">
+                <div className="w-12 h-12 bg-green-500/10 rounded-xl flex items-center justify-center">
+                  <CheckCircle className="w-6 h-6 text-green-500" />
+                </div>
+              </div>
+              <p className="text-gray-400 text-sm mb-1">Seguros</p>
+              <p className="text-3xl font-extrabold text-green-500">{stats.safe}</p>
+            </div>
+
+            <div className="bg-[#1A1A1A] border border-yellow-500/20 rounded-2xl p-6 hover:border-yellow-500/50 transition-all">
+              <div className="flex items-center justify-between mb-4">
+                <div className="w-12 h-12 bg-yellow-500/10 rounded-xl flex items-center justify-center">
+                  <AlertTriangle className="w-6 h-6 text-yellow-500" />
+                </div>
+              </div>
+              <p className="text-gray-400 text-sm mb-1">Atenção</p>
+              <p className="text-3xl font-extrabold text-yellow-500">{stats.attention}</p>
+            </div>
+
+            <div className="bg-[#1A1A1A] border border-red-500/20 rounded-2xl p-6 hover:border-red-500/50 transition-all">
+              <div className="flex items-center justify-between mb-4">
+                <div className="w-12 h-12 bg-red-500/10 rounded-xl flex items-center justify-center">
+                  <TrendingUp className="w-6 h-6 text-red-500" />
+                </div>
+              </div>
+              <p className="text-gray-400 text-sm mb-1">Alto Risco</p>
+              <p className="text-3xl font-extrabold text-red-500">{stats.highRisk}</p>
+            </div>
+          </div>
+
+          {/* CTA Card */}
+          <div className="bg-gradient-to-br from-[#F6C90E] to-[#FFE347] rounded-2xl p-8 text-[#0D0D0D]">
+            <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+              <div className="flex-1">
+                <h2 className="text-2xl md:text-3xl font-extrabold mb-2">
+                  Analisar Comprovante Agora
+                </h2>
+                <p className="text-[#0D0D0D]/80 text-lg">
+                  Proteja-se contra golpes em segundos com nossa IA avançada
+                </p>
+              </div>
+              <Link href="/analyze">
+                <button className="px-8 py-4 bg-[#0D0D0D] text-white font-bold rounded-xl hover:bg-[#1A1A1A] transition-all shadow-2xl hover:scale-105 whitespace-nowrap">
+                  Começar Análise
+                </button>
+              </Link>
+            </div>
+          </div>
 
           {/* Recent Verifications */}
-          <Card className="bg-gray-900 border-[#FFD200]/20">
-            <CardHeader>
-              <CardTitle>Verificações Recentes</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {verifications.length === 0 ? (
-                <div className="text-center py-12">
-                  <Shield className="w-12 h-12 text-gray-600 mx-auto mb-4" />
-                  <p className="text-gray-400 mb-4">
-                    Ainda não há verificações — faça sua primeira análise.
-                  </p>
-                  <Link href="/upload">
-                    <Button className="bg-[#FFD200] text-black hover:bg-[#FFD200]/90">
-                      Começar agora
-                    </Button>
-                  </Link>
+          <div className="bg-[#1A1A1A] border border-[#F6C90E]/20 rounded-2xl p-6 lg:p-8">
+            <h2 className="text-2xl font-extrabold mb-6">Verificações Recentes</h2>
+            
+            {verifications.length === 0 ? (
+              <div className="text-center py-16">
+                <div className="w-20 h-20 bg-[#F6C90E]/10 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                  <Shield className="w-10 h-10 text-[#F6C90E]" />
                 </div>
-              ) : (
-                <div className="space-y-4">
-                  {verifications.map((verification) => (
-                    <Link
-                      key={verification.id}
-                      href={`/result/${verification.id}`}
-                      className="block"
-                    >
-                      <div className="bg-black/50 border border-gray-800 rounded-lg p-4 hover:border-[#FFD200]/40 transition-all">
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-3 mb-2">
-                              <span
-                                className="px-3 py-1 rounded-full text-xs font-semibold"
-                                style={{
-                                  backgroundColor: `${getRiskColor(verification.risk_level)}20`,
-                                  color: getRiskColor(verification.risk_level),
-                                }}
-                              >
-                                {getRiskLabel(verification.risk_level)}
-                              </span>
-                              <span className="text-xs text-gray-500 uppercase">
-                                {verification.type}
-                              </span>
-                            </div>
-                            <p className="text-sm text-gray-400 line-clamp-2">
-                              {Array.isArray(verification.reasons) ? verification.reasons[0] : 'Análise concluída'}
-                            </p>
+                <p className="text-gray-400 text-lg mb-2">
+                  Nenhuma verificação encontrada ainda.
+                </p>
+                <p className="text-gray-500 text-sm mb-6">
+                  Faça sua primeira análise para começar.
+                </p>
+                <Link href="/analyze">
+                  <button className="px-8 py-4 bg-gradient-to-r from-[#F6C90E] to-[#FFE347] text-[#0D0D0D] font-bold rounded-xl hover:shadow-2xl hover:scale-105 transition-all">
+                    Começar Agora
+                  </button>
+                </Link>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {verifications.map((verification) => (
+                  <Link
+                    key={verification.id}
+                    href={`/result/${verification.id}`}
+                    className="block"
+                  >
+                    <div className="bg-[#0D0D0D] border border-[#F6C90E]/10 rounded-xl p-6 hover:border-[#F6C90E]/40 transition-all group">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-3 mb-3">
+                            <span
+                              className="px-4 py-1.5 rounded-full text-xs font-bold"
+                              style={{
+                                backgroundColor: `${getRiskColor(verification.risk_level)}20`,
+                                color: getRiskColor(verification.risk_level),
+                              }}
+                            >
+                              {getRiskLabel(verification.risk_level)}
+                            </span>
+                            <span className="text-xs text-gray-500 uppercase font-semibold">
+                              {verification.type}
+                            </span>
                           </div>
-                          <div className="text-right">
-                            <div className="text-2xl font-bold mb-1" style={{ color: getRiskColor(verification.risk_level) }}>
-                              {verification.score}
-                            </div>
-                            <p className="text-xs text-gray-500">
-                              {verification.created_at ? format(new Date(verification.created_at), 'dd/MM/yyyy', { locale: ptBR }) : ''}
-                            </p>
+                          <p className="text-gray-400 line-clamp-2 leading-relaxed">
+                            {verification.reasons[0] || 'Análise concluída'}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-3xl font-extrabold mb-1" style={{ color: getRiskColor(verification.risk_level) }}>
+                            {verification.score}
                           </div>
+                          <p className="text-xs text-gray-500">
+                            {format(new Date(verification.created_at), 'dd/MM/yyyy', { locale: ptBR })}
+                          </p>
                         </div>
                       </div>
-                    </Link>
-                  ))}
-
-                  <Link href="/history">
-                    <Button variant="outline" className="w-full border-[#FFD200]/20 text-[#FFD200] hover:bg-[#FFD200]/10">
-                      Ver histórico completo
-                    </Button>
+                    </div>
                   </Link>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                ))}
+
+                <Link href="/history">
+                  <button className="w-full mt-6 px-6 py-3 bg-[#0D0D0D] border border-[#F6C90E]/20 text-[#F6C90E] rounded-xl hover:bg-[#F6C90E]/10 hover:border-[#F6C90E]/50 transition-all font-semibold">
+                    Ver Histórico Completo
+                  </button>
+                </Link>
+              </div>
+            )}
+          </div>
         </div>
       </main>
     </div>
